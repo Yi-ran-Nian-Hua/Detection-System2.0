@@ -99,6 +99,7 @@ class CameraInterface(QMainWindow):
         self.play_video_btn.setEnabled(False)  # 初始状态禁用
         
         # 状态显示标签
+        self.status_label = QLabel('当前状态: 待机')
         self.left_hand_label = QLabel('举左手计数: 0')
         self.right_hand_label = QLabel('举右手计数: 0')
         self.stand_label = QLabel('站立时长计时: 00:00')
@@ -120,6 +121,7 @@ class CameraInterface(QMainWindow):
         left_layout.addWidget(self.upload_video_btn)
         left_layout.addWidget(self.play_video_btn)
         left_layout.addSpacing(20)
+        left_layout.addWidget(self.status_label)
         left_layout.addWidget(self.left_hand_label)
         left_layout.addWidget(self.right_hand_label)
         left_layout.addWidget(self.stand_label)
@@ -199,8 +201,14 @@ class CameraInterface(QMainWindow):
             # 关闭摄像头（如果正在运行）
             self.close_camera()
             
+            # 确保摄像头线程完全停止
+            if hasattr(self, 'video_thread') and self.video_thread.is_alive():
+                print("等待视频线程完全停止...")
+                self.video_thread.join(timeout=2)  # 等待最多2秒
+            
             # 设置视频模式
             self.is_video_mode = True
+            self.update_status_label("视频播放模式")
             
             # 启动视频处理线程
             self.video_event = threading.Event()
@@ -347,6 +355,7 @@ class CameraInterface(QMainWindow):
             print(f"处理视频时出错: {e}")
         finally:
             self.is_video_mode = False
+            self.update_status_label("待机")
             
     # 按钮事件处理函数
     def open_camera(self):
@@ -356,7 +365,23 @@ class CameraInterface(QMainWindow):
             self.video_event.set()
             self.is_video_mode = False
             
+        # 确保视频线程完全停止
+        if hasattr(self, 'video_thread') and self.video_thread.is_alive():
+            print("等待视频线程完全停止...")
+            self.video_thread.join(timeout=2)  # 等待最多2秒
+            
         try:
+            # 等待3秒后启动摄像头
+            print("等待3秒后启动摄像头...")
+            
+            # 启动摄像头线程（如果还没有启动）
+            if hasattr(self, 'camera_thread') and not self.camera_thread.is_alive():
+                self.camera_event.clear()  # 清除停止标志
+                self.camera_thread.start()
+                self.timestamp_thread.start()
+                print("摄像头线程已启动")
+                self.update_status_label("摄像头模式")
+            
             # 替换为你的图片路径
             self.reference_image = frameyplopose
             print(self.reference_image)
@@ -407,6 +432,11 @@ class CameraInterface(QMainWindow):
             self.video_event.set()
             self.is_video_mode = False
 
+        # 停止摄像头线程（如果正在运行）
+        if hasattr(self, 'camera_event'):
+            self.camera_event.set()
+            print("摄像头线程已停止")
+
         # 停止定时器
         if hasattr(self, 'camera_timer'):
             self.camera_timer.stop()
@@ -414,6 +444,9 @@ class CameraInterface(QMainWindow):
         # 清空显示区域
         if hasattr(self, 'camera_label'):
             self.camera_label.clear()
+            
+        # 更新状态
+        self.update_status_label("待机")
 
     def start_all(self):
         print("按下：开始所有计时")
@@ -550,6 +583,9 @@ class CameraInterface(QMainWindow):
         # 更新显示
         self.update_display()
 
+    def update_status_label(self, status):
+        """更新状态标签"""
+        self.status_label.setText(f'当前状态: {status}')
 
 ##KEY[0     1       2       3       4
 ## [“鼻子”、“左眼”、“右眼”、“左耳”、“右耳”、
@@ -768,19 +804,22 @@ if __name__ == '__main__':
     stand_Time = 0
     status_lock = threading.Lock()
 
-
     app = QApplication(sys.argv)
     window = CameraInterface()
     window.show()
 
-    walk=[]
-    sit=[]
-    stand=[]
+    # 创建事件对象，但不立即启动线程
     event = threading.Event()
-    threadyolo = threading.Thread(target=yolo,args=(event,))
-    threadyolo.start()
-    thread = threading.Thread(target=print_timestamp,args=(event,))
-    thread.start()
+    
+    # 创建线程对象，但不立即启动
+    threadyolo = threading.Thread(target=yolo, args=(event,))
+    thread = threading.Thread(target=print_timestamp, args=(event,))
+    
+    # 将线程对象传递给窗口，以便控制启动和停止
+    window.camera_event = event
+    window.camera_thread = threadyolo
+    window.timestamp_thread = thread
+    
     sys.exit(app.exec_())
     
 
