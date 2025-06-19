@@ -194,7 +194,6 @@ class CameraInterface(QMainWindow):
         """播放视频文件"""
         print("按下：播放视频文件")
         if not self.video_path:
-            print("请先选择视频文件")
             return
             
         try:
@@ -227,7 +226,7 @@ class CameraInterface(QMainWindow):
             
     def process_video(self, event):
         """处理视频文件的线程函数"""
-        global frameyplopose, global_stand_status, global_sit_status, global_walk_status, status_lock
+        global frameyplopose, global_stand_status, global_sit_status, global_walk_status, status_lock, L_feet, R_feet, L_feetxy, R_feetxy
         
         try:
             # 打开视频文件
@@ -269,7 +268,7 @@ class CameraInterface(QMainWindow):
                 sit_condition = False
                 walk_condition = False
                 
-                results = model(frame, save=False, conf=0.6)
+                results = model(frame, save=False, conf=0.5)
                 
                 if len(results[0].boxes) < 1:
                     # 如果没有检测到人，直接显示原帧
@@ -319,19 +318,52 @@ class CameraInterface(QMainWindow):
                     if KEY[10] and KEY[5] and (key[0][10][1] < key[0][5][1]):
                         message = message + "R_hand up "
                         
-                    # 判断姿态
-                    if Lleg and Rleg:
-                        if up_Lleg and up_Rleg:
-                            if not walk_condition:
-                                sit_condition = True
-                                message = message + "sit "
-                        else:
-                            if not walk_condition:
-                                stand_condition = True
-                                message = message + "stand "
+                    # 更新脚部位置
+                    if KEY[15] and KEY[16]:
+                        L_feetxy = [int(key[0][15][0]), int(key[0][15][1])]
+                        R_feetxy = [int(key[0][16][0]), int(key[0][16][1])]
                     else:
-                        sit_condition = True
-                        message = message + "no leg sit "
+                        L_feetxy = [0, 0]
+                        R_feetxy = [0, 0]
+                        
+                    # 行走检测逻辑 - 根据视频分辨率调整阈值
+                    frame_height, frame_width = frame.shape[:2]
+                    # 动态调整阈值，基于视频分辨率
+                    base_threshold = 10
+                    scale_factor = min(frame_width, frame_height) / 720  # 基于720p作为基准
+                    lengTH = int(base_threshold * scale_factor)
+
+                    if len(L_feet) ==3 and len(R_feet) ==3 and KEY[15] and KEY[16]:
+                        # 计算左脚移动距离
+                        left_move1 = matrix_distance(L_feet[0], L_feet[1])
+                        left_move2 = matrix_distance(L_feet[1], L_feet[2])
+                        # 计算右脚移动距离
+                        right_move1 = matrix_distance(R_feet[0], R_feet[1])
+                        right_move2 = matrix_distance(R_feet[1], R_feet[2])
+                        
+                        # 判断是否为行走（连续移动）
+                        if ((left_move1 > lengTH and left_move2 > lengTH) or 
+                            (right_move1 > lengTH and right_move2 > lengTH)):
+                            walk_condition=True
+                            sit_condition=False
+                            stand_condition=False
+                            message=message+"walk"
+                            print(f"检测到行走 - 左脚移动: {left_move1:.1f}, {left_move2:.1f}, 右脚移动: {right_move1:.1f}, {right_move2:.1f}, 阈值: {lengTH}")
+                        
+                    # 判断姿态（只有在没有行走时才判断）
+                    if not walk_condition:
+                        if Lleg and Rleg : #左右腿是否成功检测
+                            if up_Lleg and up_Rleg :#数学逻辑判断是否是坐姿（两腿弯曲）
+                                sit_condition=True
+                                message=""
+                                message=message+"sit "
+                            else :
+                                stand_condition=True
+                                message=""
+                                message=message+"stand "#print("stand")
+                        else :
+                            sit_condition=True
+                            message=message+"no leg sit "#print("no leg sit")
                         
                     # 更新全局状态
                     with status_lock:
@@ -356,7 +388,7 @@ class CameraInterface(QMainWindow):
         finally:
             self.is_video_mode = False
             self.update_status_label("待机")
-            
+
     # 按钮事件处理函数
     def open_camera(self):
         print("按下：打开摄像头")
@@ -759,23 +791,55 @@ def yolo(event):
                     L_feetxy=[0,0]
                     R_feetxy=[0,0]
 
-                lengTH=15 #脚移动像素点参数
+                # 行走检测逻辑 - 根据视频分辨率调整阈值
+                frame_height, frame_width = frame.shape[:2]
+                # 动态调整阈值，基于视频分辨率
+                base_threshold = 5
+                scale_factor = min(frame_width, frame_height) / 720  # 基于720p作为基准
+                lengTH = int(base_threshold * scale_factor)
 
                 if len(L_feet) ==3 and len(R_feet) ==3 and KEY[15] and KEY[16]:
-                    if (matrix_distance(L_feet[0],L_feet[1])>lengTH and matrix_distance(L_feet[1],L_feet[2])>lengTH) or (matrix_distance(R_feet[0],R_feet[1])>lengTH and matrix_distance(R_feet[1],R_feet[2])>lengTH): #数学逻辑判断是否为行走
+                    # 计算左脚移动距离
+                    left_move1 = matrix_distance(L_feet[0], L_feet[1])
+                    left_move2 = matrix_distance(L_feet[1], L_feet[2])
+                    # 计算右脚移动距离
+                    right_move1 = matrix_distance(R_feet[0], R_feet[1])
+                    right_move2 = matrix_distance(R_feet[1], R_feet[2])
+                    
+                    # 判断是否为行走（连续移动）
+                    if ((left_move1 > lengTH and left_move2 > lengTH) or 
+                        (right_move1 > lengTH and right_move2 > lengTH)):
                         walk_condition=True
                         sit_condition=False
                         stand_condition=False
                         message=message+"walk"
+                        print(f"检测到行走 - 左脚移动: {left_move1:.1f}, {left_move2:.1f}, 右脚移动: {right_move1:.1f}, {right_move2:.1f}, 阈值: {lengTH}")
+                        
+                # 判断姿态（只有在没有行走时才判断）
+                if not walk_condition:
+                    if Lleg and Rleg : #左右腿是否成功检测
+                        if up_Lleg and up_Rleg :#数学逻辑判断是否是坐姿（两腿弯曲）
+                            sit_condition=True
+                            message=""
+                            message=message+"sit "
+                        else :
+                            stand_condition=True
+                            message=""
+                            message=message+"stand "#print("stand")
+                    else :
+                        sit_condition=True
+                        message=message+"no leg sit "#print("no leg sit")
+
+                # 更新全局状态
+                with status_lock:
+                    global_stand_status = stand_condition
+                    global_sit_status = sit_condition
+                    global_walk_status = walk_condition
             else:print("no key")
             annotated_frame = results[0][0].plot()
             font=cv2.FONT_HERSHEY_SIMPLEX
             annotated_frame = cv2.putText(annotated_frame, message,(int(x)+10,int(y)+30), font, 1, (0,0,255), 2)
             frameyplopose = annotated_frame
-            with status_lock:
-                global_stand_status = stand_condition
-                global_sit_status = sit_condition
-                global_walk_status = walk_condition
         else:
             # Break the loop if the end of the video is reached
             break
