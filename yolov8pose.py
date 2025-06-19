@@ -1,6 +1,6 @@
 import os
 import sys
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,QHBoxLayout, QPushButton, QLabel, QFrame)
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,QHBoxLayout, QPushButton, QLabel, QFrame, QFileDialog)
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QColor, QPalette,QImage,QPixmap
 
@@ -31,6 +31,11 @@ class CameraInterface(QMainWindow):
         self.stand_start_time = 0
         self.sit_start_time = 0
         self.walk_start_time = 0
+        
+        # 新增视频文件相关变量
+        self.video_path = None
+        self.is_video_mode = False
+        self.video_cap = None
         
         super().__init__()
         self.initUI()
@@ -86,6 +91,13 @@ class CameraInterface(QMainWindow):
         self.close_camera_btn = QPushButton('关闭摄像头')
         self.close_camera_btn.clicked.connect(self.close_camera)
         
+        # 新增视频文件上传按钮
+        self.upload_video_btn = QPushButton('上传本地视频文件')
+        self.upload_video_btn.clicked.connect(self.upload_video)
+        self.play_video_btn = QPushButton('播放视频文件')
+        self.play_video_btn.clicked.connect(self.play_video)
+        self.play_video_btn.setEnabled(False)  # 初始状态禁用
+        
         # 状态显示标签
         self.left_hand_label = QLabel('举左手计数: 0')
         self.right_hand_label = QLabel('举右手计数: 0')
@@ -104,6 +116,9 @@ class CameraInterface(QMainWindow):
         # 添加控件到左侧布局
         left_layout.addWidget(self.open_camera_btn)
         left_layout.addWidget(self.close_camera_btn)
+        left_layout.addSpacing(10)
+        left_layout.addWidget(self.upload_video_btn)
+        left_layout.addWidget(self.play_video_btn)
         left_layout.addSpacing(20)
         left_layout.addWidget(self.left_hand_label)
         left_layout.addWidget(self.right_hand_label)
@@ -135,12 +150,13 @@ class CameraInterface(QMainWindow):
         
     def init_timers_and_counters(self):
         # 初始化各种计时器和计数器
-        self.left_hand_count=L_handcounts
+        global L_handcounts, R_handcounts
+        self.left_hand_count = L_handcounts
         self.right_hand_count = R_handcounts
         self.stand_time = 0
         self.sit_time = 0
         self.walk_time = 0
-        self.reference_image=[]
+        self.reference_image = []
         # 初始化开始时间标记
         self.stand_started = False
         self.sit_started = False
@@ -150,17 +166,204 @@ class CameraInterface(QMainWindow):
         self.stand_timer = QTimer()
         self.sit_timer = QTimer()
         self.walk_timer = QTimer()
+    def upload_video(self):
+        """上传本地视频文件"""
+        print("按下：上传本地视频文件")
+        # 支持多种视频格式
+        file_dialog = QFileDialog()
+        file_path, _ = file_dialog.getOpenFileName(
+            self,
+            "选择视频文件",
+            "",
+            "视频文件 (*.mp4 *.avi *.mov *.mkv *.wmv *.flv *.webm *.m4v *.3gp *.mpg *.mpeg *.ts *.mts *.m2ts);;所有文件 (*)"
+        )
+        
+        if file_path:
+            self.video_path = file_path
+            self.play_video_btn.setEnabled(True)
+            print(f"已选择视频文件: {file_path}")
+            # 显示文件名
+            filename = os.path.basename(file_path)
+            self.upload_video_btn.setText(f'已选择: {filename[:20]}...' if len(filename) > 20 else f'已选择: {filename}')
+        else:
+            print("未选择视频文件")
+            
+    def play_video(self):
+        """播放视频文件"""
+        print("按下：播放视频文件")
+        if not self.video_path:
+            print("请先选择视频文件")
+            return
+            
+        try:
+            # 关闭摄像头（如果正在运行）
+            self.close_camera()
+            
+            # 设置视频模式
+            self.is_video_mode = True
+            
+            # 启动视频处理线程
+            self.video_event = threading.Event()
+            self.video_thread = threading.Thread(target=self.process_video, args=(self.video_event,))
+            self.video_thread.start()
+            
+            # 启动定时器，用于更新视频画面
+            self.camera_timer = QTimer()
+            self.camera_timer.timeout.connect(self.update_frame)
+            self.camera_timer.start(30)  # 约33fps
+            
+            print(f"开始播放视频: {self.video_path}")
+            
+        except Exception as e:
+            print(f"播放视频时出错: {e}")
+            
+    def process_video(self, event):
+        """处理视频文件的线程函数"""
+        global frameyplopose, global_stand_status, global_sit_status, global_walk_status, status_lock
+        
+        try:
+            # 打开视频文件
+            cap = cv2.VideoCapture(self.video_path)
+            if not cap.isOpened():
+                print(f"无法打开视频文件: {self.video_path}")
+                return
+                
+            # 获取视频信息
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            print(f"视频信息 - FPS: {fps}, 总帧数: {total_frames}")
+            
+            # 加载YOLO模型
+            model = YOLO('yolov8n-pose.pt')
+            
+            frame_count = 0
+            while cap.isOpened() and not event.is_set():
+                success, frame = cap.read()
+                if not success:
+                    print("视频播放完毕")
+                    break
+                    
+                frame_count += 1
+                
+                # 使用相同的YOLO处理逻辑
+                message = ""
+                R_smleg = 0
+                L_smleg = 0
+                R_bigleg = 0
+                L_bigleg = 0
+                R_leg = 0
+                L_leg = 0
+                up_Rleg = False
+                up_Lleg = False
+                Rleg = False
+                Lleg = False
+                stand_condition = False
+                sit_condition = False
+                walk_condition = False
+                
+                results = model(frame, save=False, conf=0.6)
+                
+                if len(results[0].boxes) < 1:
+                    # 如果没有检测到人，直接显示原帧
+                    frameyplopose = frame
+                    continue
+                    
+                # 处理检测到的人
+                boxes = results[0].boxes[0]
+                keypoints = results[0].keypoints[0]
+                x, y = boxes.xyxy.cpu().numpy()[0][0], boxes.xyxy.cpu().numpy()[0][1]
+                key = np.array(keypoints.xy.cpu().numpy())
+                person = np.sum(key)
+                
+                if person > 0:
+                    KEY = [False] * 17
+                    for i in range(len(key[0])):
+                        if key[0][i][1] + key[0][i][0] == 0:
+                            KEY[i] = False
+                        else:
+                            KEY[i] = True
+                            
+                    # 计算腿部长度
+                    if KEY[12] and KEY[14]:
+                        R_bigleg = matrix_distance(key[0][14], key[0][12])
+                    if KEY[11] and KEY[13]:
+                        L_bigleg = matrix_distance(key[0][11], key[0][13])
+                    if KEY[16] and KEY[14]:
+                        R_smleg = matrix_distance(key[0][14], key[0][16])
+                    if KEY[15] and KEY[13]:
+                        L_smleg = matrix_distance(key[0][15], key[0][13])
+                    if KEY[16] and KEY[12]:
+                        Rleg = True
+                        R_leg = matrix_distance(key[0][16], key[0][12])
+                    if KEY[13] and KEY[11]:
+                        Lleg = True
+                        L_leg = matrix_distance(key[0][11], key[0][13])
+                        
+                    # 判断腿部弯曲
+                    if (R_leg < (R_smleg + R_bigleg) * 0.92 and R_leg * R_smleg * R_bigleg != 0) or R_smleg > R_bigleg:
+                        up_Rleg = True
+                    if (L_leg < (L_smleg + L_bigleg) * 0.92 and L_leg * L_smleg * L_bigleg != 0) or L_smleg > L_bigleg:
+                        up_Lleg = True
+                        
+                    # 判断举手
+                    if KEY[9] and KEY[6] and (key[0][9][1] < key[0][6][1]):
+                        message = message + "L_hand up "
+                    if KEY[10] and KEY[5] and (key[0][10][1] < key[0][5][1]):
+                        message = message + "R_hand up "
+                        
+                    # 判断姿态
+                    if Lleg and Rleg:
+                        if up_Lleg and up_Rleg:
+                            if not walk_condition:
+                                sit_condition = True
+                                message = message + "sit "
+                        else:
+                            if not walk_condition:
+                                stand_condition = True
+                                message = message + "stand "
+                    else:
+                        sit_condition = True
+                        message = message + "no leg sit "
+                        
+                    # 更新全局状态
+                    with status_lock:
+                        global_stand_status = stand_condition
+                        global_sit_status = sit_condition
+                        global_walk_status = walk_condition
+                        
+                # 绘制结果
+                annotated_frame = results[0][0].plot()
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                annotated_frame = cv2.putText(annotated_frame, message, (int(x) + 10, int(y) + 30), font, 1, (0, 0, 255), 2)
+                frameyplopose = annotated_frame
+                
+                # 控制播放速度
+                time.sleep(1/fps)
+                
+            cap.release()
+            print("视频处理完成")
+            
+        except Exception as e:
+            print(f"处理视频时出错: {e}")
+        finally:
+            self.is_video_mode = False
+            
     # 按钮事件处理函数
     def open_camera(self):
         print("按下：打开摄像头")
+        # 关闭视频播放（如果正在运行）
+        if hasattr(self, 'video_event'):
+            self.video_event.set()
+            self.is_video_mode = False
+            
         try:
             # 替换为你的图片路径
             self.reference_image = frameyplopose
-            print(reference_image)
+            print(self.reference_image)
             if self.reference_image is None:
-                print(f"无法加载图片: {image_path}")
+                print(f"无法加载图片")
             else:
-                print(f"成功加载图片: {image_path}")
+                print(f"成功加载图片")
                 # 可以在这里对图片进行预处理
                 self.reference_image = cv2.resize(self.reference_image, (720, 700))
                 
@@ -199,6 +402,11 @@ class CameraInterface(QMainWindow):
     def close_camera(self):
         print("按下：关闭摄像头")
 
+        # 停止视频播放（如果正在运行）
+        if hasattr(self, 'video_event'):
+            self.video_event.set()
+            self.is_video_mode = False
+
         # 停止定时器
         if hasattr(self, 'camera_timer'):
             self.camera_timer.stop()
@@ -221,15 +429,15 @@ class CameraInterface(QMainWindow):
 
     def clear_all(self):
         print("按下：清空所有计时计数")
-        global L_Hand ,L_handcounts , R_Hand, R_handcounts
-        L_handcounts=1
-        R_handcounts=1
+        global L_Hand, L_handcounts, R_Hand, R_handcounts, sit_Time, stand_Time, walk_Time
+        L_handcounts = 1
+        R_handcounts = 1
 
-        L_Hand=0
-        R_Hand=0
+        L_Hand = 0
+        R_Hand = 0
         sit_Time = 0
-        stand_Time=0
-        walk_Time=0
+        stand_Time = 0
+        walk_Time = 0
         self.left_hand_count = 0
         self.right_hand_count = 0
         self.stand_time = 0
@@ -262,12 +470,15 @@ class CameraInterface(QMainWindow):
         self.sit_label.setText(f'坐下时长计时: {self.format_time(self.sit_time)}')
         self.walk_label.setText(f'行走计时: {self.format_time(self.walk_time)}')
 
-        # 实际应从共享变量获取
+    # 实际应从共享变量获取
     def get_stand_status(self):
+        global global_stand_status
         return global_stand_status
     def get_sit_status(self):
+        global global_sit_status
         return global_sit_status
     def get_walk_status(self):
+        global global_walk_status
         return global_walk_status
     def get_left_hand_count(self):
         # 从共享变量获取左手计数
@@ -278,16 +489,18 @@ class CameraInterface(QMainWindow):
         global R_Hand
         return R_Hand
     def get_stand_time(self):
+        global stand_Time
         return stand_Time
     def get_sit_time(self):
+        global sit_Time
         return sit_Time
     def get_walk_time(self):
+        global walk_Time
         return walk_Time
 
     def update_counters(self):
         # 从共享变量获取最新状态
-        global L_Hand
-        global R_Hand
+        global L_Hand, R_Hand
         if self.TimeBool:
             self.left_hand_count = L_Hand  # 左手计数
             self.right_hand_count = R_Hand  # 右手计数
@@ -361,16 +574,7 @@ def compare_boolean_matrix(matrix):
         return 0
 
 def print_timestamp(event):
-    global L_feet #左脚统计是否移动
-    global R_feet #右脚统计是否移动
-    global L_feetxy #左脚一帧xy位置
-    global R_feetxy #右脚一帧xy位置
-    global L_hand #左手状态统计
-    global R_hand #右手状态统计
-    global L_handup #左手状态
-    global R_handup #右手状态
-    global L_handcounts #左手举放计数
-    global R_handcounts #右手举放计数
+    global L_feet, R_feet, L_feetxy, R_feetxy, L_hand, R_hand, L_handup, R_handup, L_handcounts, R_handcounts
     """后台线程函数，用于每0.2秒记录一次当前所有状态"""
     while not event.is_set():
 
@@ -412,19 +616,7 @@ def yolo(event):
     model = YOLO('yolov8n-pose.pt')  # 加载预训练模型
     video_path = 0
     cap = cv2.VideoCapture(video_path)
-    global L_feet
-    global R_feet
-    global L_feetxy
-    global R_feetxy
-    global frameyplopose
-    global L_handup
-    global R_handup
-    global L_handcounts
-    global R_handcounts
-    global L_Hand
-    global R_Hand
-    global global_stand_status, global_sit_status, global_walk_status
-    global status_lock
+    global L_feet, R_feet, L_feetxy, R_feetxy, frameyplopose, L_handup, R_handup, L_handcounts, R_handcounts, L_Hand, R_Hand, global_stand_status, global_sit_status, global_walk_status, status_lock
     hip=True
     ankle=True
     KEY=[False] * 17 #初始化17个关键点为False
@@ -556,29 +748,24 @@ def yolo(event):
 if __name__ == '__main__':
     #初始化定义
     frameyplopose = np.zeros((700, 720, 3), dtype=np.uint8)
-    L_feet=[]
-    R_feet=[]
-    L_feetxy=[0,0]
-    R_feetxy=[0,0]
-    L_hand=[]
-    R_hand=[]
-    L_handup=False
-    R_handup=False
-    L_handcounts=0
-    R_handcounts=0
-    L_Hand=0
-    R_Hand=0
-    global global_stand_status, global_sit_status, global_walk_status
+    L_feet = []
+    R_feet = []
+    L_feetxy = [0, 0]
+    R_feetxy = [0, 0]
+    L_hand = []
+    R_hand = []
+    L_handup = False
+    R_handup = False
+    L_handcounts = 0
+    R_handcounts = 0
+    L_Hand = 0
+    R_Hand = 0
     global_stand_status = False
     global_sit_status = False
     global_walk_status = False
-    global sit_Time
-    sit_Time =0
-    global walk_Time
-    walk_Time =0
-    global stand_Time
-    stand_Time =0
-    global status_lock
+    sit_Time = 0
+    walk_Time = 0
+    stand_Time = 0
     status_lock = threading.Lock()
 
 
