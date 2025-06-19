@@ -33,7 +33,7 @@ uv --version
 ### 2. 克隆项目
 
 ```bash
-git clone <your-repository-url>
+git clone https://github.com/Yi-ran-Nian-Hua/Detection-System2.0.git
 cd "Detection System2.0"
 ```
 
